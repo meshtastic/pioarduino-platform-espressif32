@@ -31,6 +31,16 @@ GDB_TOOL_PACKAGES = {
     "riscv": "tool-riscv32-esp-elf-gdb",
 }
 
+# Timeout for the editable esptool install into the penv.
+#
+# `--reinstall-package esptool` implies uv's `--refresh-package esptool`, so this call
+# re-fetches esptool from the network even when the cache is warm. On a busy CI runner
+# that can take well over a minute; the previous 60s budget turned ordinary contention
+# into a hard build failure. This is a one-off setup step, not a hot path, so a generous
+# ceiling costs nothing when things are healthy and avoids a spurious failure when they
+# are not.
+ESPTOOL_INSTALL_TIMEOUT = int(os.getenv("PIOARDUINO_ESPTOOL_INSTALL_TIMEOUT", "600"))
+
 # Check Python version requirement
 if sys.version_info < (3, 10):
     sys.stderr.write(
@@ -586,11 +596,17 @@ def install_esptool(env, platform, python_exe, uv_executable, uv_cache_dir=None)
             "--reinstall-package", "esptool",
             f"--python={python_exe}",
             "-e", esptool_repo_path
-        ], timeout=60, env=uv_env)
+        ], timeout=ESPTOOL_INSTALL_TIMEOUT, env=uv_env)
 
     except subprocess.CalledProcessError as e:
         sys.stderr.write(
             f"Error: Failed to install esptool from {esptool_repo_path} (exit {e.returncode})\n"
+        )
+        sys.exit(1)
+    except subprocess.TimeoutExpired as e:
+        sys.stderr.write(
+            f"Error: Timed out after {e.timeout}s installing esptool from "
+            f"{esptool_repo_path}\n"
         )
         sys.exit(1)
 
@@ -813,12 +829,21 @@ def _install_esptool_from_tl_install(platform, python_exe, uv_executable, uv_cac
             "--reinstall-package", "esptool",
             f"--python={python_exe}",
             "-e", esptool_repo_path
-        ], timeout=60, env=uv_env)
+        ], timeout=ESPTOOL_INSTALL_TIMEOUT, env=uv_env)
         print(f"Installed esptool from tl-install path: {esptool_repo_path}")
 
     except subprocess.CalledProcessError as e:
         print(f"Warning: Failed to install esptool from {esptool_repo_path} (exit {e.returncode})")
         # Don't exit - esptool installation is not critical for penv setup
+    except subprocess.TimeoutExpired as e:
+        print(
+            f"Warning: Timed out after {e.timeout}s installing esptool from "
+            f"{esptool_repo_path}"
+        )
+        # Don't exit - esptool installation is not critical for penv setup.
+        # Letting TimeoutExpired escape here is what produced the misleading
+        # "TypeError: cannot unpack non-iterable NoneType object" at builder/main.py:52,
+        # because the caller's return value never got assigned.
 
 
 def install_pio_lock(platform, uv_executable, penv_executable, uv_cache_dir=None):
